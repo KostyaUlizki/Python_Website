@@ -2,6 +2,10 @@ from flask import Flask, render_template, request, redirect, url_for, session
 from flask_mysqldb import MySQL
 import MySQLdb.cursors
 import re
+import ConfigurationModule as PasswordManager
+import hashlib
+import binascii
+import os
 
 app = Flask(__name__)
 
@@ -14,11 +18,18 @@ app.config['MYSQL_USER'] = 'root'
 app.config['MYSQL_PASSWORD'] = 'Aa123456'
 app.config['MYSQL_DB'] = 'pythonlogin'
 
+
 # Intialize MySQL
 mysql = MySQL(app)
 
-# http://localhost:5000/pythonlogin/ - the following will be our login page, which will use both GET and POST requests
-@app.route('/pythonlogin/', methods=['GET', 'POST'])
+
+def get_hashed_password(password, salt):
+    hash = hashlib.pbkdf2_hmac( 'sha1', password.encode(), salt.encode(), 100000)
+    password = binascii.hexlify(hash)
+    return password
+
+# http://localhost:5000 - the following will be our login page, which will use both GET and POST requests
+@app.route('/', methods=['GET', 'POST'])
 def login():
     # Output message if something goes wrong...
     msg = ''
@@ -29,9 +40,25 @@ def login():
         password = request.form['password']
         # Check if account exists using MySQL
         cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-        cursor.execute('SELECT * FROM accounts WHERE username = %s AND password = %s', (username, password,))
+        cursor.execute('SELECT * FROM accounts WHERE username = %s', (username,))
         # Fetch one record and return result
         account = cursor.fetchone()
+
+        # check if account exist in database
+        if account:
+            #login_attempts = account['login_attempts']
+            salt_byte = account['salt'].encode()  
+            hash = hashlib.pbkdf2_hmac('sha1', password.encode(), salt_byte, 100000)  
+            password = binascii.hexlify(hash) 
+
+            cursor.execute('SELECT * FROM accounts WHERE username = %s AND password = %s', (username, password,))
+            account = cursor.fetchone()
+        else:
+            # user name doesn't exist
+            msg = "user name doesn't exist"
+            return render_template('index.html', msg=msg)
+
+
         # If account exists in accounts table in out database
         if account:
             # Create session data, we can access this data in other routes
@@ -46,6 +73,7 @@ def login():
     # Show the login form with message (if any)
     return render_template('index.html', msg=msg)
 
+
     # http://localhost:5000/python/logout - this will be the logout page
 @app.route('/pythonlogin/logout')
 def logout():
@@ -56,17 +84,35 @@ def logout():
    # Redirect to login page
    return redirect(url_for('login'))
 
+
    # http://localhost:5000/pythinlogin/register - this will be the registration page, we need to use both GET and POST requests
 @app.route('/pythonlogin/register', methods=['GET', 'POST'])
 def register():
     # Output message if something goes wrong...
+    salt = os.urandom(16)  
+    salt_byte = binascii.hexlify(salt)
     msg = ''
     # Check if "username", "password" and "email" POST requests exist (user submitted form)
     if request.method == 'POST' and 'username' in request.form and 'password' in request.form and 'email' in request.form:
         # Create variables for easy access
-        username = request.form['username']
+
         password = request.form['password']
-        email = request.form['email']
+        password_conf = PasswordManager.read_conf()
+        if(len(password) < password_conf["passwordLength"]):
+            msg = 'Password too short'
+            return render_template('register.html', msg=msg)
+        if(not PasswordManager.check_password(password)):
+            msg = 'weak password'
+            return render_template('register.html', msg=msg)
+
+                    # יצירת משתנים לגישה נוחה
+        username = request.form['username']
+        email = request.form['email']  
+        hash = hashlib.pbkdf2_hmac('sha1', password.encode(), salt_byte, 100000)  
+        #attempts_to_login = '0'  
+        password = binascii.hexlify(hash)
+
+        
 
          # Check if account exists using MySQL
         cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
@@ -83,7 +129,10 @@ def register():
             msg = 'Please fill out the form!'
         else:
             # Account doesnt exists and the form data is valid, now insert new account into accounts table
-            cursor.execute('INSERT INTO accounts VALUES (NULL, %s, %s, %s)', (username, password, email,))
+            cursor.execute('INSERT INTO accounts (username, password, email, salt) VALUES (%s, %s, %s, %s)',
+                           (username, password, email, salt_byte))
+
+            #cursor.execute('INSERT INTO accounts VALUES (NULL, %s, %s, %s ,%s)', (username, password, email,salt))
             mysql.connection.commit()
             msg = 'You have successfully registered!'
 
